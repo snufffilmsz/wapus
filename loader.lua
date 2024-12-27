@@ -1,7 +1,7 @@
 -- https://discord.gg/tUEJZYvF9d
 -- known to work on wave, nihon, awp.gg, syn z, seliware, sirhurt
 local environment = identifyexecutor and identifyexecutor() or ""
-local source = game:HttpGet("https://raw.githubusercontent.com/iRay888/wapus/refs/heads/main/source.lua")
+local source = game:HttpGet("https://raw.githubusercontent.com/snufffilmsz/wapus/refs/heads/main/source.lua")
 
 if getfflag and string.find(string.lower(tostring(getfflag("DebugRunParallelLuaOnMainThread"))), "true") and not executed then
     loadstring(source)()
