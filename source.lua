@@ -2893,36 +2893,132 @@ LPH_JIT_MAX(function() -- Main Cheat
         return closestCharacters
     end
 
-    local function trajectory(o, a, t, s)
-        local f = -a
-        local ld = t - o
-        local a = f:Dot(f)
-        local b = 4 * ld:Dot(ld)
-        local k = (4 * (f:Dot(ld) + s * s)) / (2 * a)
-        local v = (k * k - b / a) ^ 0.5
-        local t, t0 = k - v, k + v
+    local Vector3 = Vector3
 
-        t = t < 0 and t0 or t; t = t ^ 0.5
-        return f * t / 2 + ld / t, t
+    local function trajectory(origin, acceleration, target, speed)
+        local force = -acceleration
+        local deltaPos = target - origin
+
+        local forceMagnitudeSq = force:Dot(force)
+        local deltaPosLengthSq = deltaPos:Dot(deltaPos)
+        local forcePosDot = force:Dot(deltaPos)
+
+        local speedSq = speed * speed
+        local k = (2 * (forcePosDot + speedSq)) / forceMagnitudeSq
+        local discriminant = k * k - (4 * deltaPosLengthSq) / forceMagnitudeSq
+        
+        if discriminant < 0 then return nil end
+        
+        local sqrtDisc = discriminant ^ 0.5
+        local t1 = (k - sqrtDisc) * 0.5
+        local t2 = (k + sqrtDisc) * 0.5
+        local t = (t1 > 0 and t1) or t2
+        if t <= 0 then return nil end
+
+        return (force * t * 0.5 + deltaPos / t), t
     end
 
     local solve = debug.getupvalue(physics.timehit, 2)
-    local function complexTrajectory(o, a, t, s, e) -- thank you mickey
-        local ld = t - o
-        a = -a
-        e = e or Vector3.zero
+    local function cbrt(x)
+        return x < 0 and -(-x)^(1/3) or x^(1/3)
+    end
+    
+    local function solveQuadratic(a, b, c)
+        if math.abs(a) < 1e-10 then return -c/b end
+        local disc = b*b - 4*a*c
+        if disc < 0 then return nil end
+        local q = -0.5 * (b + math.sign(b) * math.sqrt(disc))
+        local x1 = q/a
+        local x2 = c/q
+        return x1, x2
+    end
+    
+    local function solveCubic(a, b, c, d)
+        if math.abs(a) < 1e-10 then return solveQuadratic(b, c, d) end
 
-        local r1, r2, r3, r4 = solve(
-            a:Dot(a) * 0.25,
-            a:Dot(e),
-            a:Dot(ld) + e:Dot(e) - s^2,
-            ld:Dot(e) * 2,
-            ld:Dot(ld)
-        )
+        b = b/a
+        c = c/a
+        d = d/a
+        
+        local p = (3*c - b*b) / 3
+        local q = (2*b*b*b - 9*b*c + 27*d) / 27
+        local D = q*q/4 + p*p*p/27
+        
+        if D > 0 then
+            local u = cbrt(-q/2 + math.sqrt(D))
+            local v = cbrt(-q/2 - math.sqrt(D))
+            return u + v - b/3
+        elseif D == 0 then
+            local u = cbrt(-q/2)
+            return 2*u - b/3, -u - b/3
+        else
+            local phi = math.acos(-q/(2*math.sqrt(-p*p*p/27)))
+            local t = 2*math.sqrt(-p/3)
+            return t*math.cos(phi/3) - b/3,
+                   t*math.cos((phi + 2*math.pi)/3) - b/3,
+                   t*math.cos((phi + 4*math.pi)/3) - b/3
+        end
+    end
 
-        local x = (r1>0 and r1) or (r2>0 and r2) or (r3>0 and r3) or r4
-        local v = (ld + e*x + 0.5*a*x^2) / x
-        return v, x
+    local function solveQuartic(a, b, c, d, e)
+        if math.abs(a) < 1e-10 then return solveCubic(b, c, d, e) end
+        
+        b = b/a
+        c = c/a
+        d = d/a
+        e = e/a
+
+        local p = c - 3*b*b/8
+        local q = d + b*b*b/8 - b*c/2
+        local r = e - 3*b*b*b*b/256 + b*b*c/16 - b*d/4
+
+        local y = solveCubic(8, 8*p, 2*p*p-8*r, -q*q)
+        if not y then return nil end
+        local m = math.sqrt(2*y)
+        local roots = {}
+        local numRoots = 0
+        
+        local function addRoot(root)
+            if root and type(root) == "number" then
+                roots[numRoots + 1] = root - b/4
+                numRoots = numRoots + 1
+            end
+        end
+        
+        if m ~= 0 then
+            local k = q/m
+            addRoot(solveQuadratic(1, m, y + k))
+            addRoot(solveQuadratic(1, -m, y - k))
+        else
+            addRoot(solveQuadratic(1, 0, y))
+        end
+
+        table.sort(roots)
+        for _, root in ipairs(roots) do
+            if root > 0 then
+                return root
+            end
+        end
+        
+        return nil
+    end
+
+    local function complexTrajectory(origin, acceleration, target, speed, targetVelocity)
+        local deltaPos = target - origin
+        acceleration = -acceleration
+        targetVelocity = targetVelocity or Vector3.new(0, 0, 0)
+
+        local a = acceleration:Dot(acceleration) * 0.25
+        local b = acceleration:Dot(targetVelocity)
+        local c = acceleration:Dot(deltaPos) + targetVelocity:Dot(targetVelocity) - speed * speed
+        local d = deltaPos:Dot(targetVelocity) * 2
+        local e = deltaPos:Dot(deltaPos)
+        
+        local time = solveQuartic(a, b, c, d, e)
+        if not time or time <= 0 then return nil end
+        
+        local velocity = (deltaPos + targetVelocity * time + acceleration * (time * time * 0.5)) / time
+        return velocity.Unit, time
     end
 
     local function toanglesyx(v)
